@@ -10,15 +10,15 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
 import time
 import tqdm
-import os
+import copy
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-from PIL import Image
 
-
+# ----------------------------------------------------------------------------------------------------------------------
 # We set the GPU if available
 torch.cuda.empty_cache()
+
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
     print("\n\n\n----- Running of a GPU -----\n")
@@ -26,9 +26,13 @@ else:
     device = torch.device("cpu")
     print("\n\n\n----- Running on a CPU -----\n")
 
-
-########################################## LOADING THE DATASET ############################################
+# ----------------------------------------------------------------------------------------------------------------------
+# -------------------------------------------- LOADING THE DATASET -----------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------------
+# We set the batch size
 batch_size: int = 16
+
+# We set the image dimension we are working on
 img_dim: int = 64
 
 
@@ -50,6 +54,7 @@ class Rescale(object):
         return image
 
 
+# We define the basic transformation over the images
 input_transform = transforms.Compose([
     Rescale(img_dim),
     transforms.CenterCrop(img_dim),
@@ -62,10 +67,10 @@ target_transform = transforms.Compose([
     transforms.Lambda(lambda x: torch.from_numpy(np.array(x) - 1).long())
 ])
 
-
 # We download the Oxford-III-Pet dataset for training and testing, respectively
-training_set_path = "C:\Learning\Computer Science\Machine Learning\\02 Databases Used\CV Datasets\Segmentation Datasets"
-test_set_path = "C:\Learning\Computer Science\Machine Learning\\02 Databases Used\CV Datasets\Segmentation Datasets"
+# First, we set the path for these datasets
+training_set_path = "C:\Datasets\Segmentation"
+test_set_path = "C:\Datasets\Segmentation"
 
 train_set = torchvision.datasets.OxfordIIITPet(
     root=training_set_path,
@@ -84,32 +89,34 @@ test_set = torchvision.datasets.OxfordIIITPet(
     target_transform=target_transform
 )
 
-
-# We set the DataLoader corresponding to each set
+# We set the DataLoaders corresponding to each set
 train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=True)
 
-
-########################################### ----- JUST CHECKING ----- ##################################################
+# ----------------------------------------------------------------------------------------------------------------------
 print("\n\n\n--- Just Checking ---\n")
 
 num_samples = 5
-img_grid = gs.GridSpec(num_samples, 4, width_ratios=[1,1,1,1])
-fig = plt.figure(figsize=(10,10))
+img_grid = gs.GridSpec(num_samples, 4, width_ratios=[1, 1, 1, 1])
+fig = plt.figure(figsize=(10, 10))
 plt.axis('off')
 
 for idx, i in enumerate(np.random.choice(len(train_set), num_samples)):
     image, label = train_set[i]
-    plt.subplot(img_grid[idx,0]).imshow(image.permute(1,2,0))
-    plt.subplot(img_grid[idx,1]).imshow(label.squeeze())
+    plt.subplot(img_grid[idx, 0]).imshow(image.permute(1, 2, 0))
+    plt.subplot(img_grid[idx, 1]).imshow(label.squeeze())
 
 for ax in fig.get_axes():
-    ax.tick_params(bottom = False, labelbottom = False, left = False, labelleft = False)
+    ax.tick_params(bottom=False, labelbottom=False, left=False, labelleft=False)
 
 plt.show()
 
 
-######################################### ----- THE ARCHITECTURE ----- #################################################
+# ----------------------------------------------------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------------------------------------------------
+# ------------------------------------------ THE ARCHITECTURE ----------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------------
 class UNetBlock(nn.Module):
     def __init__(self, input_channels, output_channels):
         super(UNetBlock, self).__init__()
@@ -118,7 +125,7 @@ class UNetBlock(nn.Module):
             in_channels=input_channels,
             out_channels=output_channels,
             kernel_size=3,
-            padding=(1,1))
+            padding=(1, 1))
         self.reluActivation = nn.ReLU()
         self.batchNorm = nn.BatchNorm2d(output_channels)
 
@@ -126,8 +133,7 @@ class UNetBlock(nn.Module):
             in_channels=output_channels,
             out_channels=output_channels,
             kernel_size=3,
-            padding=(1,1))
-
+            padding=(1, 1))
 
     def forward(self, x):
         out = self.convolutionalLayer1(x)
@@ -188,7 +194,7 @@ class UNet(nn.Module):
             out_channels=num_classes,
             kernel_size=3,
             stride=1,
-            padding=(1,1))
+            padding=(1, 1))
 
     def forward(self, x):
         out1 = self.uNetBlock1(x)
@@ -203,11 +209,11 @@ class UNet(nn.Module):
         out4 = self.uNetBlock4(out4)
 
         out5 = self.transposeConvLayer1(out4)
-        out5 = torch.cat([out3,out5], dim=1)
+        out5 = torch.cat([out3, out5], dim=1)
         out5 = self.uNetBlock5(out5)
 
         out6 = self.transposeConvLayer2(out5)
-        out6 = torch.cat([out2,out6], dim=1)
+        out6 = torch.cat([out2, out6], dim=1)
         out6 = self.uNetBlock6(out6)
 
         out7 = self.transposeConvLayer3(out6)
@@ -216,7 +222,11 @@ class UNet(nn.Module):
         return out
 
 
-######################################## ----- THE IOU METRIC ----- ####################################################
+# ----------------------------------------------------------------------------------------------------------------------
+# -------------------------------------------- THE IOU METRIC ----------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------------
+# We define the Intersection-Over-Union (IoU) metric, used for computing the performance of the u-net model
+
 def IoU(outputs: torch.Tensor, labels: torch.Tensor):
     SMOOTH = 1e-5
 
@@ -225,80 +235,101 @@ def IoU(outputs: torch.Tensor, labels: torch.Tensor):
     intersection = (class_outputs & labels).sum()
     union = (class_outputs | labels).sum()
 
-    batch_iou = (intersection + SMOOTH)/(union + SMOOTH)
+    batch_iou = (intersection + SMOOTH) / (union + SMOOTH)
 
     return batch_iou
 
 
 def Model_IoU(model, train_loader):
-    model = model.to(device)
+    model = model.to(device)  # Set the model to GPU if available
+
     iou_set = []
     for inputs, labels in tqdm(train_loader):
-        inputs, labels = inputs.to(device), labels.to(device)     # Set the data to GPU if available
+        inputs, labels = inputs.to(device), labels.to(device)  # Set the data to GPU if available
+
         outputs = model(inputs)
         iou_set.append(IoU(outputs, labels))
 
-    mean_iou = sum(iou_set)/len(iou_set)
+    mean_iou = sum(iou_set) / len(iou_set)
 
     return mean_iou
 
 
-###################################### ----- TRAINING ----- ############################################################
-def train(model, train_set, batch_size, num_epochs, optimizer, scheduler):
+# ----------------------------------------------------------------------------------------------------------------------
+# ------------------------------------------ TRAINING ------------------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------------
+def train(model, train_set, batch_size, num_epochs, optimizer):
     print("\n\n\n----- Begin the Training Process -----")
     start_time_train = time.perf_counter()
 
-    model = model.to(device)
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    model = model.to(device)  # Set the model to GPU if available
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True)
+
+    best_iou = -np.inf
+    best_weights = None
+    best_epoch = 0
 
     train_loss = []
     for epoch in range(num_epochs):
         print(f"\n----- Begin training epoch {epoch + 1} -----")
         start_time_epoch = time.perf_counter()
 
-        model.train()     # Set the model to training mode
+        model.train()  # Set the model to training mode
 
         epoch_loss = 0
         for images, labels in tqdm(train_loader):
-            images, labels = images.to(device), labels.to(device)     # Set the data to GPU if available
+            images, labels = images.to(device), labels.to(device)  # Set the data to GPU if available
 
             # Forward and Backward passes
             predictions = model(images)
             optimizer.zero_grad()
-            loss = F.cross_entropy(predictions,labels)
+            loss = F.cross_entropy(predictions, labels)
             loss.backward()
             optimizer.step()
 
             epoch_loss += loss.item()
 
         epoch_iou = Model_IoU(model, train_loader=train_loader)
-        train_loss.append(epoch_loss/len(train_loader))
+        train_loss.append(epoch_loss / len(train_loader))
+
+        if epoch_iou > best_iou:
+            best_iou = epoch_iou
+            best_weights = copy.deepcopy(model.state_dict())
+            best_epoch = epoch + 1
 
         end_time_epoch = time.perf_counter()
         time_epoch = end_time_epoch - start_time_epoch
 
-        print(f"\nEpoch: {epoch + 1} --- Training Loss: {train_loss[-1]: .4} --- IOU: {epoch_iou: .4} --- Time: {time_epoch}")
+        print(f"\nEpoch: {epoch + 1} --- Training Loss: {train_loss[-1]: .6} --- IOU: {epoch_iou: .6} --- "
+              f"Time: {time_epoch: .2}  --- Best IoU: {best_iou: .6} obtained at epoch {best_epoch}")
+
+    # Set the model('s weights) with the best IoU
+    model.load_state_dict(best_weights)
+
+    # Save the best model, based on the IoU metric
+    path_best_model = "../unet-segmentation-basic/u_net_basic.pth"
+    torch.save(model, path_best_model)
 
     end_time_train = time.perf_counter()
     time_train = end_time_train - start_time_train
-
-    print(f"\nTime for training was: {time_train}")
+    print(f"\nTime for model's training was: {time_train: .2}")
 
     return train_loss
 
 
-########################################### -----  MAIN() ----- ########################################################
-num_epochs: int = 5
+# ----------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------  MAIN() --------------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------------
+num_epochs: int = 15
 learning_rate = 1e-3
 
 num_classes: int = 3
 my_unet = UNet(num_classes=num_classes)
 
 optimizer = optim.Adam(my_unet.parameters(), lr=learning_rate)
-scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.1)
 
 train_loss = train(model=my_unet, num_epochs=num_epochs, batch_size=batch_size,
-                   train_set=train_set, optimizer=optimizer, scheduler=scheduler)
-
-
-
+                   train_set=train_set, optimizer=optimizer)
